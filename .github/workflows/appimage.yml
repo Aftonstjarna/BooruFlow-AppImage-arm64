@@ -1,0 +1,51 @@
+name: appimage-aarch64
+
+# Native ARM64 runner: no qemu, no cross toolchain.
+# Note: ubuntu-24.04-arm is available to public repositories.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label used in the artifact name
+        default: '0.13.2+42'
+      tarball_url:
+        description: linux-arm64.tar.gz URL
+        default: 'https://github.com/normalllll/BooruFlow/releases/latest/download/linux-arm64.tar.gz'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            podman squashfs-tools binutils curl
+
+      - name: Fetch release bundle
+        run: |
+          mkdir -p build/input
+          curl -fL "${{ inputs.tarball_url }}" -o build/input/linux-arm64.tar.gz
+          tar tzf build/input/linux-arm64.tar.gz | head -20
+
+      - name: Collect aarch64 library closure
+        run: MODE=full ./tool/appimage/collect-libs.sh
+
+      - name: Audit closure
+        run: ./tool/appimage/audit-bundle.sh dist/booruflow-libs-full-aarch64
+
+      - name: Build AppImage
+        env:
+          VERSION: ${{ inputs.version }}
+        run: ./tool/appimage/build-appimage.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BooruFlow-${{ inputs.version }}-anylinux-aarch64
+          path: dist/*.AppImage
+          if-no-files-found: error
