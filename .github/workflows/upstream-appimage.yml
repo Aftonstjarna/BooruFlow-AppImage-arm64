@@ -1,0 +1,160 @@
+name: upstream-appimage
+
+# Poll upstream's latest release. When it has no matching appimage-<tag>
+# release here, merge that tag (keeping the aarch64 Skia patch), build from
+# source on the ARM runner, and publish the AppImage.
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag to build (default: latest release)
+        required: false
+      force:
+        description: Build even if appimage-<tag> already exists
+        type: boolean
+        default: false
+      publish:
+        description: Create or update the GitHub release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-appimage
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve upstream release
+        id: up
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag=$(gh api repos/normalllll/BooruFlow/releases/latest --jq .tag_name)
+          fi
+          test -n "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          if gh release view "appimage-$tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Decide
+        id: decide
+        run: |
+          if [ "${{ steps.up.outputs.exists }}" = "false" ] || [ "${{ inputs.force }}" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "appimage-${{ steps.up.outputs.tag }} already exists; nothing to do"
+          fi
+
+      - name: Merge upstream tag
+        if: steps.decide.outputs.run == 'true'
+        env:
+          TAG: ${{ steps.up.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/normalllll/BooruFlow.git
+          git fetch upstream --tags
+          if git merge-base --is-ancestor "$TAG" HEAD; then
+            echo "$TAG is already merged"
+          else
+            git merge --no-edit "$TAG"
+            git push origin HEAD:main
+          fi
+
+      - name: Install Linux dependencies
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libmpv-dev libepoxy-dev \
+            build-essential podman squashfs-tools binutils curl
+
+      - name: Set up SDKs and caches
+        if: steps.decide.outputs.run == 'true'
+        uses: ./.github/actions/setup
+        with:
+          platform: linux-arm64
+          rust-targets: aarch64-unknown-linux-gnu
+
+      - name: Build Linux bundle
+        if: steps.decide.outputs.run == 'true'
+        run: flutter build linux --release
+
+      - name: Package bundle for the AppImage builder
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          bundle=build/linux/arm64/release/bundle
+          test -x "$bundle/booruflow"
+          mkdir -p build/input
+          tar -C "$bundle" -czf build/input/linux-arm64.tar.gz .
+
+      - name: Collect aarch64 library closure
+        if: steps.decide.outputs.run == 'true'
+        run: MODE=full ./tool/appimage/collect-libs.sh
+
+      - name: Audit closure
+        if: steps.decide.outputs.run == 'true'
+        run: ./tool/appimage/audit-bundle.sh dist/booruflow-libs-full-aarch64
+
+      - name: Build AppImage
+        if: steps.decide.outputs.run == 'true'
+        env:
+          VERSION: ${{ steps.up.outputs.version }}
+        run: ./tool/appimage/build-appimage.sh
+
+      - name: Write checksum
+        if: steps.decide.outputs.run == 'true'
+        run: |
+          cd dist
+          app=$(ls -1 *.AppImage | head -1)
+          sha256sum "$app" > "$app.sha256"
+
+      - name: Upload artifact (publish disabled)
+        if: steps.decide.outputs.run == 'true' && inputs.publish == false
+        uses: actions/upload-artifact@v4
+        with:
+          name: BooruFlow-${{ steps.up.outputs.version }}-anylinux-aarch64
+          path: |
+            dist/*.AppImage
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Publish release
+        if: steps.decide.outputs.run == 'true' && inputs.publish != false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.up.outputs.tag }}
+          VERSION: ${{ steps.up.outputs.version }}
+        run: |
+          if gh release view "appimage-$TAG" >/dev/null 2>&1; then
+            gh release upload "appimage-$TAG" dist/*.AppImage dist/*.sha256 --clobber
+          else
+            gh release create "appimage-$TAG" dist/*.AppImage dist/*.sha256 \
+              --title "BooruFlow $VERSION — ARM64 AppImage" \
+              --notes "Automated aarch64 AppImage build of upstream \`$TAG\`.
+
+          Built from source with the fork's Skia default (Impeller's GLES path over Mesa zink
+          corrupts textures and crashes media_kit). Bundles the full libmpv closure; host
+          provides glibc, GTK3, X11/Wayland, Vulkan and audio clients.
+
+          See the attached \`.sha256\` file."
+          fi
