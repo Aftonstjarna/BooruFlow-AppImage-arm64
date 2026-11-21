@@ -47,7 +47,7 @@ jobs:
           test -n "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-          if gh release view "appimage-$tag" >/dev/null 2>&1; then
+          if gh release view "appimage-$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -160,10 +160,12 @@ jobs:
           TAG: ${{ steps.up.outputs.tag }}
           VERSION: ${{ steps.up.outputs.version }}
         run: |
-          if gh release view "appimage-$TAG" >/dev/null 2>&1; then
-            gh release upload "appimage-$TAG" dist/*.AppImage dist/*.sha256 --clobber
+          if gh release view "appimage-$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "appimage-$TAG" dist/*.AppImage dist/*.sha256 \
+              --clobber -R "$GITHUB_REPOSITORY"
           else
             gh release create "appimage-$TAG" dist/*.AppImage dist/*.sha256 \
+              -R "$GITHUB_REPOSITORY" \
               --title "BooruFlow $VERSION — ARM64 AppImage" \
               --notes-file dist/release-notes.md
           fi
