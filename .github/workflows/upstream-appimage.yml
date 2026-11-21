@@ -1,22 +1,22 @@
 name: upstream-appimage
 
-# Poll upstream's latest release. When it has no matching appimage-<tag>
-# release here, merge that tag (keeping the aarch64 Skia patch), build from
-# source on the ARM runner, and publish the AppImage.
+# Poll upstream's latest release. When there is no matching appimage-<tag>
+# release here, rebase onto that tag (keeping the aarch64 Skia patch), build
+# from source on the ARM runner, and publish the AppImage.
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       tag:
-        description: Upstream tag to build (default: latest release)
+        description: 'Upstream tag to build (default: latest release)'
         required: false
       force:
-        description: Build even if appimage-<tag> already exists
+        description: 'Build even if appimage-<tag> already exists'
         type: boolean
         default: false
       publish:
-        description: Create or update the GitHub release
+        description: 'Create or update the GitHub release'
         type: boolean
         default: true
 
@@ -63,7 +63,7 @@ jobs:
             echo "appimage-${{ steps.up.outputs.tag }} already exists; nothing to do"
           fi
 
-      - name: Merge upstream tag
+      - name: Rebase onto upstream tag
         if: steps.decide.outputs.run == 'true'
         env:
           TAG: ${{ steps.up.outputs.tag }}
@@ -73,10 +73,10 @@ jobs:
           git remote add upstream https://github.com/normalllll/BooruFlow.git
           git fetch upstream --tags
           if git merge-base --is-ancestor "$TAG" HEAD; then
-            echo "$TAG is already merged"
+            echo "$TAG is already contained in HEAD"
           else
-            git merge --no-edit "$TAG"
-            git push origin HEAD:main
+            git rebase "$TAG"
+            git push --force-with-lease origin HEAD:main
           fi
 
       - name: Install Linux dependencies
@@ -128,6 +128,21 @@ jobs:
           app=$(ls -1 *.AppImage | head -1)
           sha256sum "$app" > "$app.sha256"
 
+      - name: Write release notes
+        if: steps.decide.outputs.run == 'true'
+        env:
+          TAG: ${{ steps.up.outputs.tag }}
+        run: |
+          cat > dist/release-notes.md <<EOF
+          Automated aarch64 AppImage build of upstream \`$TAG\`.
+
+          Built from source with the fork's Skia default: Impeller's GLES path over
+          Mesa zink corrupts textures and crashes media_kit. Bundles the full libmpv
+          closure; the host provides glibc, GTK3, X11/Wayland, Vulkan and audio clients.
+
+          See the attached \`.sha256\` file.
+          EOF
+
       - name: Upload artifact (publish disabled)
         if: steps.decide.outputs.run == 'true' && inputs.publish == false
         uses: actions/upload-artifact@v4
@@ -150,11 +165,5 @@ jobs:
           else
             gh release create "appimage-$TAG" dist/*.AppImage dist/*.sha256 \
               --title "BooruFlow $VERSION — ARM64 AppImage" \
-              --notes "Automated aarch64 AppImage build of upstream \`$TAG\`.
-
-          Built from source with the fork's Skia default (Impeller's GLES path over Mesa zink
-          corrupts textures and crashes media_kit). Bundles the full libmpv closure; host
-          provides glibc, GTK3, X11/Wayland, Vulkan and audio clients.
-
-          See the attached \`.sha256\` file."
+              --notes-file dist/release-notes.md
           fi
