@@ -67,3 +67,28 @@ new hardware.
 `.github/workflows/appimage.yml` builds on `ubuntu-24.04-arm` (native, no qemu),
 downloads the latest upstream release bundle, runs `collect-libs.sh` and uploads
 the AppImage artifact.
+
+## Automation
+
+`.github/workflows/upstream-appimage.yml` runs every six hours and on demand:
+
+1. Reads the latest release tag from `normalllll/BooruFlow`.
+2. Skips when `appimage-<tag>` already exists in this repository.
+3. Rebases `main` onto that tag, replaying the aarch64 Skia commit (linear history).
+4. Builds the Linux ARM64 bundle on `ubuntu-24.04-arm`.
+5. Collects and audits the libmpv closure, then builds the AppImage.
+6. Publishes `appimage-<tag>` with the AppImage and its `.sha256`.
+
+Manual run: **Actions → upstream-appimage → Run workflow**, with optional `tag`,
+`force` (rebuild an existing release) and `publish` (off = artifact only).
+
+Requirements and limits:
+
+- Repository setting **Actions → Workflow permissions** must be *Read and write*.
+- A rebase conflict fails the run; resolve it manually on `main`.
+- The workflow force-pushes the rebased `main`. This is a build fork, so that is
+  expected, but it rewrites history.
+- Only the upstream *latest release* is considered, not prereleases or bare tags.
+- GitHub disables scheduled workflows after 60 days without repository activity;
+  a manual dispatch re-enables them.
+
